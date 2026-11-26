@@ -3,6 +3,7 @@ mod doc_examples_tests;
 use crate::secrets::telemetry::testing::assert_never_recorded;
 use secrecy::ExposeSecret as _;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 
@@ -1108,4 +1109,14 @@ fn loading_is_one_span_that_names_no_path_and_no_literal() {
             .as_deref(),
         Some("unknown_exec_entry")
     );
+}
+
+#[test]
+fn the_flag_wins_over_the_environment_and_a_blank_environment_is_unset() {
+    let flag = Some(PathBuf::from("/flag.toml"));
+    let env = Some(OsString::from("/env.toml"));
+    assert_eq!(explicit_config_path(flag.clone(), env.clone()), flag);
+    assert_eq!(explicit_config_path(None, env), Some(PathBuf::from("/env.toml")));
+    assert_eq!(explicit_config_path(None, Some(OsString::new())), None);
+    assert_eq!(explicit_config_path(None, None), None);
 }

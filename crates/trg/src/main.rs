@@ -137,13 +137,19 @@ fn signing_program(
 
 fn main() -> std::process::ExitCode {
     let (cli, command_identity) = Cli::parse_with_command_identity();
+    if let Some(path) = config::explicit_config_path(cli.config.clone(), std::env::var_os("TRG_CONFIG")) {
+        config::select_config_path(path);
+    }
     let cli = match cli.command {
         Commands::Git {
             command: GitCommands::Ssh {
                 command: SshCommands::Sign(sign),
             },
         } => return signing_program(&sign.args, command_identity),
-        command => Cli { command },
+        command => Cli {
+            config: cli.config,
+            command,
+        },
     };
     let runtime = runtime_for(&cli.command).enable_all().build().expect("a tokio runtime");
     let code = runtime.block_on(run(cli, command_identity));

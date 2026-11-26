@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use super::gcp::{GcpAccount, GcpBackend, GcpProject};
 use super::keychain::{KeychainBackend, DEFAULT_SERVICE};
 use super::mirror::{self, Mirror, MirrorConfig, MirrorConfigError, MirrorName};
 use super::named::{NamedSecretConfig, NamedSecretError, SecretName};
@@ -122,6 +123,8 @@ pub enum BackendConfig {
     /// is unchanged.
     #[serde(rename = "onepassword")]
     OnePassword(OnePasswordConfig),
+    /// Google Cloud Secret Manager, spelled `kind = "gcp_secret_manager"`.
+    GcpSecretManager(GcpSecretManagerConfig),
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -140,6 +143,21 @@ pub struct OnePasswordConfig {
     /// `op`'s own default is machine-local state rather than something this
     /// config says. See the module docs on [`super::onepassword`].
     pub account: OpAccount,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct GcpSecretManagerConfig {
+    /// The project whose secrets this backend reads and writes.
+    ///
+    /// Required, because `gcloud`'s own default is machine-local state rather
+    /// than something this config says. See the module docs on
+    /// [`super::gcp`].
+    pub project: GcpProject,
+    /// The `gcloud` identity to act as. When absent, `gcloud`'s active account
+    /// answers, which is what a CI job authenticated before `trg` ran has.
+    #[serde(default)]
+    pub account: Option<GcpAccount>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -176,6 +194,7 @@ impl BackendConfig {
             Self::Keychain(_) => BackendKind::Keychain,
             Self::Openbao(_) => BackendKind::Openbao,
             Self::OnePassword(_) => BackendKind::OnePassword,
+            Self::GcpSecretManager(_) => BackendKind::GcpSecretManager,
         }
     }
 }
@@ -421,6 +440,9 @@ fn build(name: &str, config: &BackendConfig) -> Result<Backend, BackendError> {
         }
         BackendConfig::OnePassword(OnePasswordConfig { account }) => {
             Ok(Backend::OnePassword(OnePasswordBackend::new(account.clone())))
+        }
+        BackendConfig::GcpSecretManager(GcpSecretManagerConfig { project, account }) => {
+            Ok(Backend::Gcp(GcpBackend::new(project.clone(), account.clone())))
         }
     }
 }

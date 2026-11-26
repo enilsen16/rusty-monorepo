@@ -5,6 +5,8 @@
 //! invocation printed in the docs is checked against it, which is only
 //! meaningful if there is one definition rather than two.
 
+use std::path::PathBuf;
+
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 
 use crate::commands::Commands;
@@ -15,6 +17,12 @@ use crate::telemetry::CommandIdentity;
 #[command(version)]
 #[command(about = "TrogonStack tools and utilities")]
 pub struct Cli {
+    /// The config file to read instead of `$XDG_CONFIG_HOME/trg/config.toml`;
+    /// `TRG_CONFIG` sets the same, and this flag wins over it. A path that does
+    /// not exist is an error, not a reason to read the default
+    #[arg(long, global = true, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Commands,
 }

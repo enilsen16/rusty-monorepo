@@ -22,6 +22,7 @@ mod var;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use http::HeaderName;
 pub use secrecy::SecretString;
@@ -259,8 +260,37 @@ pub struct ResolvedMcpServer {
     pub http_headers: HashMap<HeaderName, SecretString>,
 }
 
+/// The file chosen with `--config` or `TRG_CONFIG`, set once at startup.
+///
+/// Process-wide because every loader below reads the path itself, and the
+/// selection is a property of the invocation the same way the environment is,
+/// so threading it through each caller would only move the same value around.
+static SELECTED_CONFIG: OnceLock<PathBuf> = OnceLock::new();
+
+/// Records the config file this process was told to use, instead of the
+/// default one. Only the first selection counts.
+pub fn select_config_path(path: PathBuf) {
+    SELECTED_CONFIG.get_or_init(|| path);
+}
+
+/// The config file named on the command line or in `TRG_CONFIG`, if any.
+///
+/// The flag wins over the environment. An empty `TRG_CONFIG` counts as unset,
+/// since an exported but blank variable is the usual way of turning one off.
+pub fn explicit_config_path(flag: Option<PathBuf>, env: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    flag.or_else(|| env.filter(|value| !value.is_empty()).map(PathBuf::from))
+}
+
+/// The config file to read: the one selected with `--config` or `TRG_CONFIG`,
+/// otherwise `config.toml` in [`trg_config_dir`].
+///
+/// A selected file that does not exist is an error when it is read, and never
+/// a reason to read the default one instead.
 pub fn trg_config_path() -> PathBuf {
-    trg_config_dir().join("config.toml")
+    SELECTED_CONFIG
+        .get()
+        .cloned()
+        .unwrap_or_else(|| trg_config_dir().join("config.toml"))
 }
 
 pub fn trg_config_dir() -> PathBuf {

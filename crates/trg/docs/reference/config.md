@@ -9,18 +9,26 @@ time.
 
 `trg` resolves the config path in this order:
 
-1. `$XDG_CONFIG_HOME/trg/config.toml`
-2. `$HOME/.config/trg/config.toml`
-3. `/.config/trg/config.toml`
+1. `--config <PATH>`, accepted by every command
+2. `$TRG_CONFIG`
+3. `$XDG_CONFIG_HOME/trg/config.toml`
+4. `$HOME/.config/trg/config.toml`
+5. `/.config/trg/config.toml`
+
+The flag wins over the environment variable, and the environment variable wins
+over the default location. An empty `TRG_CONFIG` counts as unset.
 
 The file is read on demand. If it is missing, commands that require it fail
-with a clear `config file not found at <path>` error.
+with a clear `config file not found at <path>` error. That holds for a path
+chosen with `--config` or `TRG_CONFIG` too: a path that does not exist is an
+error, and `trg` never falls back to the default location, since that would
+read a different file from the one you named.
 
 ## File layout
 
 ```toml trg-example=skip
 [secrets.backends.<backend-name>]
-kind = "keychain"                  # or "openbao", "onepassword"
+kind = "keychain"                  # or "openbao", "onepassword", "gcp_secret_manager"
 
 [secrets.vars.<secret-name>]
 backend = "..."                    # with path and key, or ref
@@ -91,6 +99,7 @@ Each entry is one of:
   | `keychain`    | `path` and `key`, both required                      |
   | `openbao`     | `path` and `key`, both required                      |
   | `onepassword` | `ref`, a 1Password secret reference                  |
+  | `gcp_secret_manager` | `path`, the secret id, and no `key`          |
 
   The two spellings are not interchangeable. A `path`/`key` var naming a
   `onepassword` backend fails to load, and so does a `ref` var naming a
@@ -497,6 +506,48 @@ API_TOKEN = { backend = "personal", ref = "op://Ops/deploy-keys/api-token" }
 `{ backend = "...", path = "...", key = "..." }` naming this backend is a load
 error rather than a second spelling of the same address.
 
+### `kind = "gcp_secret_manager"`
+
+Reads and writes Google Cloud Secret Manager through an already-authenticated
+[`gcloud` CLI](https://cloud.google.com/sdk/gcloud). There is no credential to
+configure: the session `gcloud` holds, from `gcloud auth login` or from a CI
+job that authenticated before `trg` ran, answers every call.
+
+| Field     | Type   | Required | Notes                                                                 |
+| --------- | ------ | -------- | ---------------------------------------------------------------------- |
+| `project` | string | yes      | The project id, such as `my-project`. Never inferred from `gcloud config`, so one config reads one project on every machine. |
+| `account` | string | no       | The `gcloud` identity to act as, as `gcloud auth list` names it. When absent, the active account answers. |
+
+Every call carries `--project` and, when set, `--account` explicitly.
+
+A value is addressed by the secret id alone, written as a var's `path`:
+
+```toml
+token = { backend = "gsm", path = "deploy-token" }
+```
+
+A secret holds one value and its versions are not fields, so a `key` is
+refused, and so is a `ref`. The id may hold ASCII letters, digits, `-` and `_`,
+and may not start with `-`. A read takes the `latest` version, and the stored
+bytes come back exactly, a trailing newline included, so a PEM private key
+survives a round trip. A value that is not valid UTF-8 is refused.
+
+Writing, through `trg secret put --path <secret-id>` or as a mirror target,
+adds a new version with the value sent on stdin, never in argv. It never
+creates the secret: replication, access and rotation are decided where the
+secret is declared, for example in Terraform. A secret that does not exist is
+reported as such, in a dry run too. `trg secret put` strips one trailing line
+ending from stdin as it does for every backend, and a mirror writes the source
+bytes untouched.
+
+`delete` and `list` are not supported, and the backend cannot store an MCP
+server's OAuth credentials, which are a map of values and not one.
+
+`trg doctor` checks that `gcloud` answers, that the configured account holds
+credentials (or that one is active), and that the project can be listed with
+that account, which fails the same way for a project that does not exist and
+one the account cannot see.
+
 ### Credential layout
 
 | Backend       | Where one server's credentials live                             |
@@ -504,6 +555,7 @@ error rather than a second spelling of the same address.
 | `keychain`    | Service = the backend's `service`, account = the server name.     |
 | `openbao`     | `<mount>/data/[<path_prefix>/]<owner>/mcp/[<machine_id>/]<server-name>` |
 | `onepassword` | Not usable for this — a bare server name carries no vault to address. |
+| `gcp_secret_manager` | Not usable for this: a secret holds one value and credentials are a map. |
 
 Two segments are conditional and `<owner>` is not, so the full form is
 `<mount>/data/<path_prefix>/<owner>/mcp/<machine_id>/<server-name>` and the
@@ -638,6 +690,10 @@ what the table is declared under, limited to ASCII letters, digits, `-` and
 
 - Each target's backend must be one `trg` can write to. A `onepassword` target
   is rejected.
+- A `gcp_secret_manager` target is addressed by `path`, the secret id, and adds
+  a version when the latest one differs, compared byte for byte. It records no
+  `source` key, because a secret holds one value with nothing beside it, and a
+  secret that does not exist is an error rather than something to create.
 - `targets` must not be empty, and the source must not be the same address as
   any target.
 - A target may be listed once, across all mirrors. A repeat names both
@@ -1067,6 +1123,9 @@ trg exec run --name claude -- --resume
 | `` ... which is addressed with a 1Password secret reference, not `path`/`key` `` | A var used `path` and `key` against a `onepassword` backend. The message spells out the `ref` line to replace it with. |
 | `` ... which is addressed with `path` and `key`, not `ref` `` | A var used `ref` against a `keychain` or `openbao` backend. |
 | `` ... which needs both `path` and `key`; `<field>` is missing `` | Only one half of a path-and-key address was given. |
+| `` ... which is addressed with `path` holding the secret id alone; ... `` | A var naming a `gcp_secret_manager` backend used `key`, used `ref`, or left out `path`. The message spells out the line to replace it with. |
+| `` invalid `path`: Secret Manager secret id `...` ... `` | The secret id is empty, longer than 255 characters, holds a character other than ASCII letters, digits, `-` and `_`, or starts with `-`. A resource name such as `projects/p/secrets/s` is not an id. |
+| `` secret `<id>` does not exist in project `<project>`; `trg` adds versions and never creates the secret itself ... `` | A write, or a mirror run, named a Secret Manager secret that is not there. Create it first, for example with Terraform. |
 | `` 1Password secret reference `...` must start with `op://` `` | The `ref` is not a secret reference. Use the item's `Copy Secret Reference` button. |
 | `` 1Password secret reference `...` must be `op://<vault>/<item>/<field>` or `op://<vault>/<item>/<section>/<field>` `` | The reference has too few or too many segments. |
 | `` 1Password secret reference `...` must not contain an empty segment `` | A `//` or a trailing `/` left a vault, item, section, or field name empty. |
